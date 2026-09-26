@@ -69,9 +69,9 @@ panel position and your tooltip/card/debug toggles.
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) or
    [Violentmonkey](https://violentmonkey.github.io/).
-2. Add `idleon-helper.user.js` as a new script (open the raw file and the
-   extension should offer to install it, or paste its contents into a new
-   script).
+2. Open
+   [idleon-helper.user.js](https://raw.githubusercontent.com/averagenative/idleon-helper/main/idleon-helper.user.js)
+   and the extension offers to install it. Updates come from the same URL.
 3. The script runs at `document-start`, so it only takes effect from the
    *next* time the game page loads - install it between runs, not while a
    minigame is in progress, since reloading the tab to pick up a change costs

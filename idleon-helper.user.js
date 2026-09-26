@@ -1,7 +1,9 @@
 // ==UserScript==
 // @name         IdleOn Helper
 // @namespace    nativerobot
-// @version      0.2.0
+// @version      0.2.1
+// @downloadURL  https://raw.githubusercontent.com/averagenative/idleon-helper/main/idleon-helper.user.js
+// @updateURL    https://raw.githubusercontent.com/averagenative/idleon-helper/main/idleon-helper.user.js
 // @description  Reads Legends of IdleOn's in-memory state (not pixels) to help with storage: hover tooltips, a search overlay, and (optionally) the game's own item card on hover. The card feature writes the same transient UI request a storage tap already makes - see README for exactly what and why.
 // @match        https://www.legendsofidleon.com/ytGl5oc/*
 // @grant        none

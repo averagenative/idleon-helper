@@ -40,7 +40,10 @@ enforces this by construction - it has no `Page.navigate`/`Page.reload` call,
 and no command should add one. Hot-swap instead (see dev loop below).
 
 **Bump `@version` when you change `idleon-helper.user.js`.** Tampermonkey
-uses it to offer updates once this is published anywhere.
+uses it to offer updates: `@updateURL` points at raw `main` on
+github.com/averagenative/idleon-helper, so a change ships when it is pushed
+to `main`, and only if the version went up. Never lower it; a version that
+compares lower is never offered.
 
 ## Dev loop
 
