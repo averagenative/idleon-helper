@@ -59,11 +59,55 @@ single-letter variables in the surrounding code.
 - `Object.prototype` getter/setter trap on the key `"com.stencyl.Engine"`:
   our own hook, not something N.js knows about. It fires on the registry
   assignment above, re-creates the entry as the plain own property the
-  assignment would have made, deletes itself, and keeps the class; the
+  assignment would have made, disarms both traps, and keeps the class; the
   instance is read off the class's `engine` static once the constructor has
-  run. Checked against a Node simulation of the N.js statement order above
-  (2026-09-28). NOT verified live yet (needs a real load with the script
-  installed).
+  run. 0.2.2 attached through this on a real load (the hover card and search
+  worked live, 2026-09-28) - the one live confirmation so far.
+- **When the registry assignment happens.** N.js wraps the whole Haxe bundle
+  as `lime.$scripts.N=function(K,ea){...}`; nothing in it runs when N.js is
+  parsed. It runs when `index.html`'s own inline script calls
+  `lime.embed("N","openfl-content",960,540,...)`, placed right after the
+  blocking `<script src="./N.js">` tag. So the registry trap only works if
+  the userscript runs before the parser reaches that inline script. On
+  2026-09-28, 0.2.3 (unchanged capture code from 0.2.2) failed to attach on a
+  reload with Tampermonkey 5.5 on Chrome 152, while `N.js` hadn't changed
+  (same length and `last-modified` as `cache/N.js`). A late injection is the
+  likeliest explanation, but it hasn't been confirmed. The debug readout's
+  `capture` line now shows which path attached and whether the start was
+  late.
+- **Late-start detection.** The bundle's inner wrapper passes `window` as its
+  global `T` (`..."undefined"!=typeof window?window:...` at the end of the
+  `$scripts.N` function), and the static init runs `T.$haxeUID|=0`. So
+  `typeof window.$haxeUID === 'number'` at userscript start means the bundle
+  has already run. Verified in cache/N.js, 2026-09-28.
+- **Bind-helper fallback trap on `hx__closures__`.** Haxe's `$bind`, `v(a,b)`
+  in this build, does `null==a.hx__closures__?a.hx__closures__={}:...` the
+  first time any method of `a` is bound, and no prototype literal declares
+  `hx__closures__` (search `hx__closures__:`, no hits), so the read on a
+  fresh object reaches an `Object.prototype` getter with the object as
+  `this`. Two fresh objects lead to the Engine:
+  - The Engine constructor sets `a.engine=this` and then binds seven of its
+    own methods (`v(this,this.onUpdate)`, `onFocusLost`, `onFocus`,
+    `onWindowResize`, `onWindowRestore`, `onWindowMaximize`,
+    `onWindowFullScreen`), which covers a start after `lime.embed` but
+    before the Engine is built.
+  - A new actor's behavior scripts. `com.stencyl.behavior.ActorScript` is
+    `function(a){c.call(this);this.actor=a}`, the Script base constructor
+    binds nothing, and scripts bind their handlers in `init()`. By then the
+    Actor constructor has set `this.engine=c`. `loadScene` replaces the
+    recycled pool (`this.recycledActorsOfType=new Hb`), so a map change
+    builds fresh actors, which covers a start after the Engine exists.
+  - Not the Actor's own binds: the Actor constructor
+    (`com.stencyl.models.Actor`) binds `updateTweenXY`/`updateTweenAngle`/
+    `updateTweenScaleXY` *before* it sets `this.engine`.
+  - A candidate is only accepted if `e.__class__.engine === e`. That rules
+    out the Script facade class `c`, the only other object with a
+    `getGameAttribute` method (a static forwarding to `c.engine`).
+
+  Verified in cache/N.js, 2026-09-28, and checked in a Node replay of four
+  injection timings: document-start attaches via the registry trap; after
+  embed attaches via bind; after the Engine exists, nothing attaches until a
+  map change, then bind does. NOT verified live.
 - Why not trap `gameAttributes` (what 0.2.1 and earlier did): the Engine
   prototype literal declares the field itself -
   `...,actorsToCreate:null,gameAttributes:null,savableAttributes:null,...`

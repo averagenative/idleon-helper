@@ -101,6 +101,11 @@ timed badly during play.
 - **`cache/N.js` is gitignored and ~26 MB.** Fetch it with
   `tools/fetch-client.sh` rather than committing it or assuming it's already
   there.
+- **Don't assume the userscript runs before the game.** The registry trap
+  below needs it to start before `index.html`'s inline `lime.embed(...)`
+  call, and that isn't guaranteed. The `hx__closures__` bind trap is the
+  fallback for a late start. Keep both, and read the debug readout's
+  `capture` line to see which one attached on a given load.
 - **The engine-capture trap is on the class-registry key
   `"com.stencyl.Engine"`, not on any Engine field.** Haxe declares every
   instance field as `name:null` in the prototype literal, so an

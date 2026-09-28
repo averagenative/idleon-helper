@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IdleOn Helper
 // @namespace    nativerobot
-// @version      0.2.3
+// @version      0.2.4
 // @downloadURL  https://raw.githubusercontent.com/averagenative/idleon-helper/main/idleon-helper.user.js
 // @updateURL    https://raw.githubusercontent.com/averagenative/idleon-helper/main/idleon-helper.user.js
 // @description  Reads Legends of IdleOn's in-memory state (not pixels) to help with storage: hover tooltips, a search overlay, and (optionally) the game's own item card on hover. The card feature writes the same transient UI request a storage tap already makes - see README for exactly what and why.
@@ -44,9 +44,16 @@
   // Engine class as the value, while the bundle is still defining classes -
   // long before the game constructs its Engine. The setter re-creates the
   // registry entry as the plain own property the assignment would have
-  // made (so the game keeps working exactly as before), removes itself, and
-  // keeps the class; pollEngine() then picks the instance up off the
-  // class's `engine` static once the constructor has set it.
+  // made (so the game keeps working exactly as before), disarms, and keeps
+  // the class; pollEngine() then picks the instance up off the class's
+  // `engine` static once the constructor has set it.
+  //
+  // That only works if this script runs before the bundle does. N.js wraps
+  // the whole bundle in `lime.$scripts.N=function(...){...}`, and it runs
+  // when the page's own inline `lime.embed("N",...)` call does, right after
+  // the N.js <script> tag in index.html. Nothing guarantees the userscript
+  // manager gets this script in ahead of that, so there is a second trap, on
+  // the bind helper, for a late start - see `hx__closures__` below.
   //
   // Not `gameAttributes`, the field the constructor assigns on the instance,
   // which is what this script trapped up to 0.2.1 and which never fired: the
@@ -59,7 +66,8 @@
   // registry key can, because the registry is a bare object with nothing of
   // its own in the way.
   let E = null;
-  let EngineClass = null; // com.stencyl.Engine itself, once the registry trap sees it
+  let EngineClass = null; // com.stencyl.Engine itself, once either trap below finds it
+  let capturedVia = null; // which path found it - shown in the debug readout
 
   function adopt(engine) {
     E = engine;
@@ -73,39 +81,100 @@
     if (e && e !== E && typeof e.getGameAttribute === 'function') adopt(e);
   }
 
+  // Whether the game bundle had already run by the time this script started.
+  // Its outermost wrapper passes `window` in as the global Haxe writes its
+  // object-id counter to ("...T.$haxeUID|=0..." in the static init, where `T`
+  // is `"undefined"!=typeof window?window:...` - N.js, read 2026-09-28), so
+  // a number here means lime.embed already ran and the registry assignment
+  // the first trap below waits for is already over.
+  const lateStart = typeof window.$haxeUID === 'number';
+
+  // One Object.prototype accessor per key. A write to an object that doesn't
+  // have the key yet is re-made as the plain own property it would have been
+  // (so the game keeps working exactly as before) and handed to onSet; a
+  // read on such an object is handed to onGet and yields undefined, the same
+  // as a missing property. disarm() removes every one of them at once - the
+  // moment either finds the Engine, there is nothing left to watch for.
+  const armed = [];
+  function trap(key, onSet, onGet) {
+    try {
+      Object.defineProperty(Object.prototype, key, {
+        configurable: true,
+        enumerable: false,
+        get() { if (onGet) onGet(this); return undefined; },
+        set(v) {
+          Object.defineProperty(this, key, {
+            value: v, writable: true, configurable: true, enumerable: true
+          });
+          if (onSet) onSet(v);
+        }
+      });
+      armed.push(key);
+    } catch (e) {
+      // Another script already owns a non-configurable property by this name
+      // on Object.prototype. Nothing to do but go without this one.
+    }
+  }
+  function disarm() {
+    for (const key of armed.splice(0)) delete Object.prototype[key];
+  }
+
+  // `e` is only taken as the Engine if its class's own `engine` static points
+  // back at it - which the constructor sets (`a.engine=this`) before its
+  // first v(this,...) call, and which rules out the Script facade class `c`,
+  // the one other thing with a getGameAttribute method (a static that
+  // forwards to c.engine).
+  function claim(e, via) {
+    const cls = e && e.__class__;
+    if (!cls || cls.engine !== e || typeof e.getGameAttribute !== 'function') return;
+    EngineClass = cls;
+    capturedVia = via;
+    disarm();
+  }
+
   // Dev hook, not part of normal operation: tools/cdp.mjs `grab` pauses a
   // running game on its debugger, evaluates a one-liner on whichever call
   // frame has the Engine class in scope, and stashes the instance on
   // window.__ihE. That lets this script be hot-injected into a tab that is
-  // long past the registry assignment the trap below waits for, with no
-  // reload - a reload costs whatever minigame cooldown is running. There the
-  // trap would never fire, so it isn't installed at all. On an ordinary page
-  // load window.__ihE is simply never set.
-  const ENGINE_KEY = 'com.stencyl.Engine';
+  // long past the moments the traps below wait for, with no reload - a
+  // reload costs whatever minigame cooldown is running. There they would
+  // never fire, so they aren't installed at all. On an ordinary page load
+  // window.__ihE is simply never set.
   if (window.__ihE) {
     adopt(window.__ihE);
+    capturedVia = 'dev hook';
   } else {
-    try {
-      Object.defineProperty(Object.prototype, ENGINE_KEY, {
-        configurable: true,
-        enumerable: false,
-        get() { return undefined; },
-        set(v) {
-          Object.defineProperty(this, ENGINE_KEY, {
-            value: v, writable: true, configurable: true, enumerable: true
-          });
-          delete Object.prototype[ENGINE_KEY];
-          if (typeof v === 'function') EngineClass = v;
-        }
-      });
-    } catch (e) {
-      // Another script already owns a non-configurable property by this name
-      // on Object.prototype. Nothing to do but never attach; the panel says so.
-    }
+    trap('com.stencyl.Engine', v => {
+      if (typeof v !== 'function') return;
+      EngineClass = v;
+      capturedVia = 'registry';
+      disarm();
+    });
+    // Fallback for a script that started late: Haxe's bind helper, `v(a,b)`
+    // in N.js ("...null==a.hx__closures__?a.hx__closures__={}:c=a.
+    // hx__closures__[b.__id__];..."), reads `hx__closures__` on an object
+    // the first time one of its methods is bound, and no prototype declares
+    // that name - so the read on a fresh object reaches this getter, with
+    // the object as `this`. Two kinds of fresh object lead to the Engine:
+    // - the Engine itself: its constructor binds seven methods right after
+    //   `a.engine=this` (`v(this,this.onUpdate)`, ...), so a script that
+    //   lands after the registry assignment but before the Engine exists
+    //   catches it being built;
+    // - a new actor's behavior scripts: ActorScript sets `this.actor=a` in
+    //   its constructor and the scripts bind their handlers in init()
+    //   (`this.addListener(...,v(this,this._event_...))`), by which point the
+    //   Actor constructor has set `this.engine=c`. loadScene replaces the
+    //   recycled-actor pool (`this.recycledActorsOfType=new Hb`), so every
+    //   map change builds fresh actors - a script that lands after the Engine
+    //   exists attaches on the next one. (Not the Actor's own binds: its
+    //   constructor binds its tweens before it sets `this.engine`.)
+    trap('hx__closures__', null, o => {
+      claim(typeof o.getGameAttribute === 'function' ? o : o.actor && o.actor.engine, 'bind');
+    });
   }
 
-  // If the trap never fires - script installed after the bundle already
-  // registered its classes and no dev hook either - say so plainly rather
+  // If neither trap fires - script started after the game and nothing new
+  // has been created since, and no dev hook either - say so plainly rather
   // than leaving the panel silently blank forever. Once the class has been
   // seen, a missing instance only means the game is still loading.
   let neverAttached = false;
@@ -867,7 +936,11 @@
 
   function syncStatus() {
     dot.classList.toggle('on', !!E);
+    // lateStart is known from the first frame: the registry trap can't fire
+    // any more, and only the bind fallback's map-change path is left.
     statusEl.textContent = E ? 'attached'
+      : EngineClass ? 'attaching...'
+      : lateStart ? 'started after the game did - change maps to attach'
       : neverAttached ? 'not attached — install at document-start and reload the game'
       : 'attaching...';
   }
@@ -878,6 +951,7 @@
     const gm = view && gameMouse(view);
     const slot = gm && slotAt(gm.x, gm.y);
     dbgEl.innerHTML = [
+      `capture ${capturedVia || '-'}${lateStart ? ' (late start)' : ''}`,
       `MenuType ${ga('MenuType')}`,
       `MenuType2 ${ga('MenuType2')}`,
       `tab ${selectedTab()} compact ${compactLayout() ? 1 : 0}`,
