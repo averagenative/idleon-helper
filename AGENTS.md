@@ -112,3 +112,9 @@ timed badly during play.
   and `Object.prototype` already has it (`NOTES.md`'s "Engine capture"
   section), and remember that only a real page load with the installed
   script exercises this path.
+- **A hot-injected copy's frame runs after the game's; an installed copy's
+  runs before it.** The installed script starts its rAF loop at
+  document-start, ahead of lime's, so in each frame it writes before the game
+  reads. Anything timing-sensitive against the game's own update (the item
+  card's tap handling is the example - see `NOTES.md`'s "reopen race") can
+  pass every `inject` test and still break on a real load.

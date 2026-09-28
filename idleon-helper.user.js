@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IdleOn Helper
 // @namespace    nativerobot
-// @version      0.2.2
+// @version      0.2.3
 // @downloadURL  https://raw.githubusercontent.com/averagenative/idleon-helper/main/idleon-helper.user.js
 // @updateURL    https://raw.githubusercontent.com/averagenative/idleon-helper/main/idleon-helper.user.js
 // @description  Reads Legends of IdleOn's in-memory state (not pixels) to help with storage: hover tooltips, a search overlay, and (optionally) the game's own item card on hover. The card feature writes the same transient UI request a storage tap already makes - see README for exactly what and why.
@@ -318,8 +318,13 @@
       .row { display:flex; align-items:center; justify-content:space-between; gap:6px; }
       label { color:#8b95a3; }
       #status { color:#6b7280; font-size:11px; }
+      #qw { position:relative; }
       #q { width:100%; background:#0c0e12; color:#cdd3da; border:1px solid #2a2f37;
-           border-radius:4px; padding:4px 6px; font:12px monospace; }
+           border-radius:4px; padding:4px 22px 4px 6px; font:12px monospace; }
+      #qx { position:absolute; right:3px; top:50%; transform:translateY(-50%);
+            background:none; border:0; color:#8b95a3; cursor:pointer;
+            font:14px/1 monospace; padding:0 3px; }
+      #qx:hover { color:#cdd3da; }
       #summary { color:#8b95a3; font-size:11px; }
       #matches { display:flex; flex-direction:column; gap:2px; max-height:220px; overflow:auto; }
       .m { display:flex; justify-content:space-between; gap:6px; padding:2px 4px;
@@ -344,7 +349,7 @@
       <div id="hd"><span><span id="dot"></span> <b>IdleOn Helper</b></span><button id="close" title="Hide" tabindex="-1">×</button></div>
       <div class="body">
         <div id="status">attaching...</div>
-        <input id="q" type="text" placeholder="search storage..." autocomplete="off" spellcheck="false">
+        <div id="qw"><input id="q" type="text" placeholder="search storage..." autocomplete="off" spellcheck="false"><button id="qx" title="Clear search" tabindex="-1" style="display:none">×</button></div>
         <div id="summary"></div>
         <div id="matches"></div>
         <div class="row"><label><input type="checkbox" id="ctooltip" tabindex="-1"> Tooltip</label></div>
@@ -361,7 +366,7 @@
 
   const $ = s => root.querySelector(s);
   const panel = $('#p'), dot = $('#dot'), statusEl = $('#status'), nub = $('#nub'),
-        closeBtn = $('#close'), qEl = $('#q'), summaryEl = $('#summary'), matchesEl = $('#matches'),
+        closeBtn = $('#close'), qEl = $('#q'), qClear = $('#qx'), summaryEl = $('#summary'), matchesEl = $('#matches'),
         ctooltip = $('#ctooltip'), ccard = $('#ccard'), cdebug = $('#cdebug'), dbgEl = $('#dbg'),
         overlayCv = $('#ov'), tipEl = $('#tip');
   const octx = overlayCv.getContext('2d');
@@ -442,6 +447,14 @@
   qEl.addEventListener('keypress', e => e.stopPropagation());
   qEl.addEventListener('input', onQueryChange);
 
+  // The × inside the search field. preventDefault on mousedown keeps the
+  // button from taking focus at all, so focus stays wherever it already
+  // was: clearing from inside the field leaves the cursor there for the
+  // next query, and clearing while playing never pulls keystrokes away from
+  // the game into the field.
+  qClear.addEventListener('mousedown', e => e.preventDefault());
+  qClear.addEventListener('click', () => { qEl.value = ''; onQueryChange(); });
+
   ctooltip.addEventListener('change', () => { cfg.tooltip = ctooltip.checked; save(); });
   ccard.addEventListener('change', () => {
     cfg.card = ccard.checked; save();
@@ -480,12 +493,16 @@
   //    alone, a press landing on a slot while OUR item card is open would be
   //    silently swallowed instead of registering as a tap. Close it
   //    pre-emptively, here, before the game's own listener (on its container,
-  //    not window) ever sees the press - see `features: item card` for
-  //    closeOurCard()/suppressIndex.
+  //    not window) ever sees the press. The same check guards a Quick-Tap-on
+  //    tap (the move to inventory), so the pressed slot is also suppressed -
+  //    whether or not a card of ours was open over it - so that no card
+  //    reopens there after the release before the game has read the flag.
+  //    See `features: item card` for closeOurCard()/suppressIndex.
   function onWindowMousedown(e) {
     mouseDown = true;
     if (e.target !== host && root.activeElement === qEl) qEl.blur();
-    if (card) { suppressIndex = card.index; closeOurCard(); }
+    if (card) closeOurCard();
+    suppressIndex = hoverIndex;
   }
   window.addEventListener('mousedown', onWindowMousedown, true);
 
@@ -550,6 +567,7 @@
 
   function onQueryChange() {
     query = qEl.value;
+    qClear.style.display = query ? '' : 'none';
     recomputeMatches();
     renderMatches();
   }
@@ -695,12 +713,14 @@
   // same still-unchanged slot doesn't re-issue the request, and so a change
   // underneath it (the slot's contents changed, or the hover moved off) is
   // noticed even before the game gets around to telling us its own state
-  // changed. `suppressIndex` is the one slot we must NOT reopen a card over
-  // on the very next hover frame - set whenever WE just closed one, whether
-  // because the game beat us to it or because we pre-empted a click - so
-  // closing a card by moving the mouse off it, or by clicking it, doesn't
-  // instantly spawn a new one on the same hover.
-  let card = null, suppressIndex = null;
+  // changed. `suppressIndex` is the one slot we must NOT open a card over
+  // until the hover moves off it - set whenever WE just closed one because
+  // the game beat us to it, and on every press (to the slot pressed, see
+  // onWindowMousedown) - so closing a card by clicking it doesn't instantly
+  // spawn a new one on the same hover, and a tap is never answered with a
+  // card before the game has seen the release. `hoverIndex` is the item slot
+  // under the cursor as of the last frame, for onWindowMousedown to read.
+  let card = null, suppressIndex = null, hoverIndex = null;
 
   // D.copyMap in N.js (`D` is one of the unstable single-letter class
   // variables, so this is our own equivalent, not a call to it - see
@@ -783,8 +803,21 @@
   // listeners above); a press already pre-empts and closes any card of ours
   // regardless, via onWindowMousedown, so this only prevents opening a NEW
   // one before the release.
+  //
+  // The hover is still tracked while the button is down, and suppressIndex
+  // is only ever released while it's up. Up to 0.2.2 the hover read as "no
+  // slot" for the whole press, which cleared the suppression the press had
+  // just set - so the first frame after the release reopened a card on the
+  // tapped slot. On a real page load that frame runs before the game's own:
+  // this loop's first requestAnimationFrame is made at document-start, before
+  // lime's, and both re-request at the end of their callbacks
+  // (handleApplicationEvent in N.js), so ours stays first every frame. The
+  // card request set ShowItemDescriptionBox to 1 before _event_ChestItem read
+  // it for the release, and every Quick Tap on a hovered slot was swallowed.
+  // (A hot-injected copy's loop starts after lime's, which is why the dev
+  // loop never showed it.)
   function updateCard(view) {
-    const gm = cfg.card && storageOpen() && overGame && !mouseDown && view ? gameMouse(view) : null;
+    const gm = cfg.card && storageOpen() && overGame && view ? gameMouse(view) : null;
     const slot = gm && slotAt(gm.x, gm.y);
     const order = ga('ChestOrder');
     let target = null;
@@ -792,7 +825,8 @@
       const id = order[slot.index];
       if (id !== 'Blank' && id !== 'LockedInvSpace' && id != null) target = slot.index;
     }
-    if (target !== suppressIndex) suppressIndex = null;
+    hoverIndex = target;
+    if (!mouseDown && target !== suppressIndex) suppressIndex = null;
 
     if (card) {
       const flag = ga('ShowItemDescriptionBox');
@@ -815,7 +849,7 @@
     // the player's own click, currently has a request in flight - so this
     // never stomps a card the player opened themselves (an inventory item,
     // say, which shares the same flag).
-    if (!card && target != null && target !== suppressIndex && ga('ShowItemDescriptionBox') === 0) {
+    if (!card && !mouseDown && target != null && target !== suppressIndex && ga('ShowItemDescriptionBox') === 0) {
       openCard(target);
     }
   }

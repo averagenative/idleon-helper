@@ -243,6 +243,34 @@ what was confirmed live on 2026-09-26.
   `window`, so a capture-phase window listener always runs first. By the time
   the release the game is waiting for actually happens, the flag has already
   been `0` since before the press.
+- **Both tap modes go through that one check.** The full shape of
+  `_event_ChestItem` (the handler on the drag actor, `_PixelType` 2.31, that
+  a press on a slot creates) for a release on the same slot it was pressed
+  on: `if(1==_DummyType2Dead&&0==ShowItemDescriptionBox) if(Quick Tap on
+  [OptionsListAccount[1]==1] && MenuType2==6) { move to inventory,
+  "ChestToInventory" } else { open the card, as above }`. So a nonzero flag
+  at the release swallows a Quick-Tap-on tap (the move to inventory) just
+  the same as a Quick-Tap-off one. A release on a *different* slot takes the
+  swap/merge branch, which doesn't read the flag. Verified in cache/N.js,
+  2026-09-28.
+- **The reopen race (fixed in 0.2.3).** Closing the card at mousedown isn't
+  enough on its own: the card must also not *reopen* between the DOM
+  `mouseup` and the game's next update, which is when Stencyl actually runs
+  its `whenMouseReleased` listeners. Up to 0.2.2, `updateCard()` treated the
+  hover as "no slot" for the whole press, which cleared the `suppressIndex`
+  the press had just set - so the first frame after the release requested a
+  new card on the tapped slot (flag `1`). On a real page load that frame
+  runs before the game's: the userscript makes its first
+  `requestAnimationFrame` call at document-start, before lime's, and both
+  re-request at the end of their callbacks (lime's is the last statement of
+  `handleApplicationEvent`), so ours is first in every frame. Every tap on a
+  hovered slot was swallowed. A copy hot-injected with `cdp.mjs inject`
+  starts its loop after lime's, so it runs second and never showed this. Now
+  every press sets `suppressIndex` to the slot under the cursor, and it's
+  only released once the button is up and the hover has moved off. The
+  frame-order claim is read off N.js and the rAF ordering rules. The bug and
+  the fix were reproduced in a Node replay of the press/release sequence;
+  NOT verified live yet.
 
 ## Input safety
 

@@ -36,7 +36,8 @@ see "What it writes" for exactly what that means and doesn't mean.
   bring the panel back.
 - In the search box, **Esc** clears the text (a second Esc leaves the box) and
   **Enter** leaves the box. Keys you type there never reach the game, and
-  clicking back into the game always takes the cursor out of the box.
+  clicking back into the game always takes the cursor out of the box. The
+  **×** at the right end of the box clears it with one click.
 
 ## What it reads
 
