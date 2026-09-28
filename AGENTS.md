@@ -101,10 +101,14 @@ timed badly during play.
 - **`cache/N.js` is gitignored and ~26 MB.** Fetch it with
   `tools/fetch-client.sh` rather than committing it or assuming it's already
   there.
-- **The engine-capture trap fires on the first object whose `.gameAttributes`
-  assignment also has a `getGameAttribute` method** - see the `engine
-  capture` section of `idleon-helper.user.js` for why two other, unrelated
-  classes assign a same-named field first and why that's fine. Don't
-  "simplify" this to trap a different property or to skip the
-  `getGameAttribute` check; both existing false positives were found in the
-  live client source, not hypothesized.
+- **The engine-capture trap is on the class-registry key
+  `"com.stencyl.Engine"`, not on any Engine field.** Haxe declares every
+  instance field as `name:null` in the prototype literal, so an
+  `Object.prototype` accessor for an instance field like `gameAttributes`
+  is shadowed by the prototype's own data property and never fires - that is
+  exactly how 0.2.1 shipped a trap that could not work, which the `cdp.mjs
+  grab`/`inject` dev loop never noticed because it bypasses the trap. Before
+  trapping any other name, check that nothing between the assigned object
+  and `Object.prototype` already has it (`NOTES.md`'s "Engine capture"
+  section), and remember that only a real page load with the installed
+  script exercises this path.

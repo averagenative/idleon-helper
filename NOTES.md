@@ -27,8 +27,8 @@ bundle. Two kinds of names behave very differently across a client rebuild:
   facade class (`c.getMouseX`, `c.engine`, ...), `z` is the class registry
   object Haxe populates for every class (`z["com.stencyl.Engine"]`), and `fa`
   is `com.stencyl.Input`. None of that is safe to hardcode into a patch -
-  which is why the engine-capture trap below keys off a field *name*
-  (`gameAttributes`) instead of any of these.
+  which is why the engine-capture trap below keys off a class-name *string*
+  (the registry key `"com.stencyl.Engine"`) instead of any of these.
 
 To re-verify anything here after a client update: `grep -n '<name>'
 cache/N.js` for the event/attribute name in question, not for any of the
@@ -42,24 +42,39 @@ single-letter variables in the surrounding code.
 - `getGameAttribute:function(a){return this.gameAttributes.h[a]}` is defined
   exactly once in the whole bundle, on the Engine prototype, which ends
   `...,__class__:a}` (line 784-785 in the 2026-09-26 snapshot). This is what
-  the capture trap uses to recognize an Engine instance, and what
+  `pollEngine()` checks before adopting an instance, and what
   `E.__class__` uses to reach the Engine class's static fields (`SCALE`,
   `screenScaleX/Y`, `screenOffsetX/Y`, `stage`) from an instance. Verified in
   cache/N.js.
-- `com.stencyl.models.GameModel` also assigns a field of the same name:
-  `this.gameAttributes=cb.readGameAttributes(c)` (search `readGameAttributes`).
-  `cb.__name__` is `"com.stencyl.models.GameModel"`, and its prototype has no
-  `getGameAttribute`, so this assignment passes through the trap harmlessly.
-  Verified in cache/N.js.
-- The MBS save-format class does a *static* assignment of the same name:
-  `hd.gameAttributes=hd.MBS_GAME.createField("gameAttributes",Z.LIST)`. `hd`
-  here is the class function itself, which also has no `getGameAttribute`, so
-  this also passes through. Verified in cache/N.js.
-- `Object.prototype` getter/setter trap on `gameAttributes`: not something
-  N.js does or is aware of, so there is nothing to verify against the source
-  - it is our own hook, chosen specifically because the field name above is
-  the one part of this whole path that a rebuild won't rename. NOT verified
-  live yet (needs a real load with the script installed).
+- The class registry is a plain object, `var z={}` near the top of the
+  bundle, and Engine is registered into it exactly once, by an ordinary
+  assignment right before the prototype is built:
+  `z["com.stencyl.Engine"]=a;a.__name__="com.stencyl.Engine";...;
+  a.prototype={...}` (search `["com.stencyl.Engine"]`, one hit). Verified in
+  cache/N.js, 2026-09-28.
+- `Engine.resetStatics` sets `a.engine=null`; the constructor sets it back
+  to the new instance. `pollEngine()` compares against the adopted instance
+  every frame rather than reading it once, so it would follow a rebuilt
+  Engine. Verified in cache/N.js.
+- `Object.prototype` getter/setter trap on the key `"com.stencyl.Engine"`:
+  our own hook, not something N.js knows about. It fires on the registry
+  assignment above, re-creates the entry as the plain own property the
+  assignment would have made, deletes itself, and keeps the class; the
+  instance is read off the class's `engine` static once the constructor has
+  run. Checked against a Node simulation of the N.js statement order above
+  (2026-09-28). NOT verified live yet (needs a real load with the script
+  installed).
+- Why not trap `gameAttributes` (what 0.2.1 and earlier did): the Engine
+  prototype literal declares the field itself -
+  `...,actorsToCreate:null,gameAttributes:null,savableAttributes:null,...`
+  (search `actorsToCreate:null,gameAttributes:null`). The constructor's
+  `this.gameAttributes=new l` finds that writable data property on
+  `Engine.prototype` first and just creates an own property on the instance,
+  so an accessor on `Object.prototype` is never reached and the trap never
+  fired - `E` stayed null and the panel never appeared on its own. Haxe
+  declares every instance field as `name:null` on the prototype in this
+  build, so no Engine *instance* field can be trapped this way. Verified in
+  cache/N.js, 2026-09-28, and reproduced in Node.
 - Dev hook `window.__ihE`: set by `tools/cdp.mjs grab`, which pauses the
   debugger and evaluates `z["com.stencyl.Engine"].engine` on whichever call
   frame has `z` in scope. This depends on `z` meaning the class registry in

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IdleOn Helper
 // @namespace    nativerobot
-// @version      0.2.1
+// @version      0.2.2
 // @downloadURL  https://raw.githubusercontent.com/averagenative/idleon-helper/main/idleon-helper.user.js
 // @updateURL    https://raw.githubusercontent.com/averagenative/idleon-helper/main/idleon-helper.user.js
 // @description  Reads Legends of IdleOn's in-memory state (not pixels) to help with storage: hover tooltips, a search overlay, and (optionally) the game's own item card on hover. The card feature writes the same transient UI request a storage tap already makes - see README for exactly what and why.
@@ -19,14 +19,11 @@
 
   // ---------- engine capture ----------
   // Every readout in this script hangs off one live object: the
-  // com.stencyl.Engine instance Stencyl assigns to `this.engine` in its
-  // constructor (N.js, read 2026-09-26: "...a.engine=this;c.engine=this;...
-  // this.gameAttributes=new l..." where `a` is the Engine class itself, so
-  // `a.engine` is also how the class exposes it statically). That same
-  // constructor line is what creates `gameAttributes`, the Haxe StringMap
-  // behind getGameAttribute() - confirmed the only definition of
-  // `getGameAttribute:function` in N.js sits on the Engine prototype
-  // (`a.prototype={...,getGameAttribute:function(a){return
+  // com.stencyl.Engine instance, which Engine's own constructor publishes as
+  // a static on the class (N.js, read 2026-09-26: "...a.engine=this;
+  // c.engine=this;..." where `a` is the Engine class itself). The only
+  // definition of `getGameAttribute:function` in N.js sits on the Engine
+  // prototype (`a.prototype={...,getGameAttribute:function(a){return
   // this.gameAttributes.h[a]},...,__class__:a}`), so it is a reliable way to
   // recognize an Engine instance once we see one.
   //
@@ -34,70 +31,85 @@
   // specific function is fragile here: Closure Compiler renames every local
   // class variable (a, c, z, fa, ...) on each client rebuild, so a patch
   // written against `a.engine=this` today can silently stop matching after
-  // the next IdleOn update. Field *names* on the other hand are not mangled -
-  // Haxe emits them as literal string keys because they are read back by
-  // name elsewhere (getGameAttribute("X")) - so `gameAttributes` is a name
-  // this script can depend on across rebuilds even though none of the code
-  // around it can be.
+  // the next IdleOn update. Haxe's literal strings on the other hand are not
+  // mangled - class names and field names are emitted as-is because Haxe
+  // reads them back by name - so those are what this keys off.
   //
-  // So: trap the property name itself. A getter/setter on Object.prototype
-  // fires for every future `.gameAttributes = ...` assignment on any object
-  // on the page. Two other classes assign a field with this same name before
-  // Engine does - com.stencyl.models.GameModel ("this.gameAttributes=
-  // cb.readGameAttributes(c)") and the MBS save-format class hd ("hd.
-  // gameAttributes=hd.MBS_GAME.createField(...)", a *static* assignment on
-  // the class function, which also passes through this trap since a bare
-  // function object has no getGameAttribute of its own either) - so the
-  // setter checks for `getGameAttribute` as a method on `this` before
-  // deciding it found the real thing. Everything else's assignment is
-  // rewritten as an ordinary own property (so the game keeps working
-  // exactly as before) and the trap stays armed for whoever's next.
+  // So: trap the class registry. Haxe registers every class by its full name
+  // as the bundle defines it - "z["com.stencyl.Engine"]=a;a.__name__=
+  // "com.stencyl.Engine";..." (N.js, read 2026-09-28; the one assignment of
+  // that key in the whole bundle, and `z` is a plain `var z={}` near the top
+  // of it). That is an ordinary assignment to an ordinary object, so a
+  // setter on Object.prototype for that exact key fires once, with the
+  // Engine class as the value, while the bundle is still defining classes -
+  // long before the game constructs its Engine. The setter re-creates the
+  // registry entry as the plain own property the assignment would have
+  // made (so the game keeps working exactly as before), removes itself, and
+  // keeps the class; pollEngine() then picks the instance up off the
+  // class's `engine` static once the constructor has set it.
+  //
+  // Not `gameAttributes`, the field the constructor assigns on the instance,
+  // which is what this script trapped up to 0.2.1 and which never fired: the
+  // Engine prototype literal itself declares that field ("...,
+  // actorsToCreate:null,gameAttributes:null,savableAttributes:null,..."),
+  // and an assignment that finds a writable data property on the prototype
+  // chain just makes an own property on the instance - it never reaches an
+  // accessor further up on Object.prototype. Haxe declares every instance
+  // field that way, so no Engine instance field can be trapped like this; a
+  // registry key can, because the registry is a bare object with nothing of
+  // its own in the way.
   let E = null;
+  let EngineClass = null; // com.stencyl.Engine itself, once the registry trap sees it
 
   function adopt(engine) {
     E = engine;
   }
 
-  try {
-    Object.defineProperty(Object.prototype, 'gameAttributes', {
-      configurable: true,
-      enumerable: false,
-      get() { return undefined; },
-      set(v) {
-        Object.defineProperty(this, 'gameAttributes', {
-          value: v, writable: true, configurable: true, enumerable: true
-        });
-        if (typeof this.getGameAttribute === 'function') {
-          // Found the Engine instance. Stop watching every object on the
-          // page for this property - one match is all we need, and leaving
-          // the trap installed forever would mean every future
-          // `.gameAttributes = x` anywhere (menus opening, saves loading)
-          // pays for a property definition it doesn't need.
-          delete Object.prototype.gameAttributes;
-          adopt(this);
-        }
-      }
-    });
-  } catch (e) {
-    // Another script already owns a non-configurable `gameAttributes` on
-    // Object.prototype. Nothing to do but never attach; the panel says so.
+  // Called every frame from `loop`. Compared against E rather than read once:
+  // Engine.resetStatics sets `a.engine=null` (N.js), so if the game ever
+  // builds a new Engine this follows it rather than holding on to the old one.
+  function pollEngine() {
+    const e = EngineClass && EngineClass.engine;
+    if (e && e !== E && typeof e.getGameAttribute === 'function') adopt(e);
   }
 
   // Dev hook, not part of normal operation: tools/cdp.mjs `grab` pauses a
   // running game on its debugger, evaluates a one-liner on whichever call
   // frame has the Engine class in scope, and stashes the instance on
   // window.__ihE. That lets this script be hot-injected into a tab that is
-  // long past the .gameAttributes assignment the trap above is waiting for,
-  // with no reload - a reload costs whatever minigame cooldown is running.
-  // On an ordinary page load window.__ihE is simply never set, so this is a
-  // no-op there.
-  if (window.__ihE) adopt(window.__ihE);
+  // long past the registry assignment the trap below waits for, with no
+  // reload - a reload costs whatever minigame cooldown is running. There the
+  // trap would never fire, so it isn't installed at all. On an ordinary page
+  // load window.__ihE is simply never set.
+  const ENGINE_KEY = 'com.stencyl.Engine';
+  if (window.__ihE) {
+    adopt(window.__ihE);
+  } else {
+    try {
+      Object.defineProperty(Object.prototype, ENGINE_KEY, {
+        configurable: true,
+        enumerable: false,
+        get() { return undefined; },
+        set(v) {
+          Object.defineProperty(this, ENGINE_KEY, {
+            value: v, writable: true, configurable: true, enumerable: true
+          });
+          delete Object.prototype[ENGINE_KEY];
+          if (typeof v === 'function') EngineClass = v;
+        }
+      });
+    } catch (e) {
+      // Another script already owns a non-configurable property by this name
+      // on Object.prototype. Nothing to do but never attach; the panel says so.
+    }
+  }
 
-  // If the trap never fires - script installed after the assignment already
-  // happened and no dev hook either - say so plainly rather than leaving the
-  // panel silently blank forever.
+  // If the trap never fires - script installed after the bundle already
+  // registered its classes and no dev hook either - say so plainly rather
+  // than leaving the panel silently blank forever. Once the class has been
+  // seen, a missing instance only means the game is still loading.
   let neverAttached = false;
-  setTimeout(() => { if (!E) neverAttached = true; }, 60000);
+  setTimeout(() => { if (!E && !EngineClass) neverAttached = true; }, 60000);
 
   // ---------- config ----------
   const KEY = 'ih_cfg';
@@ -897,6 +909,7 @@
 
   function frame() {
     if (!host.isConnected) { teardown(); return; }
+    pollEngine();
     const view = computeView();
     gameCv = view ? view.cv : null; // refresh what onMousemoveTrack compares against
     syncStatus();
